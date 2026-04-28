@@ -15,6 +15,8 @@ namespace AniTracker.Models
         public string Status { get => _status; set => _status = value; }
         public int CurrentProgress { get => _currentProgress; set => _currentProgress = value; }
         public DateTime AddedAt { get => _addedAt; set => _addedAt = value; }
+        public int Score { get; set; }
+        public int CurrentEpisode { get; set; }
 
         public ListEntry() { }
 

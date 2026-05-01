@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Text;
-using System.Security.Cryptography;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace AniTrackerG
@@ -35,11 +35,21 @@ namespace AniTrackerG
                 }
                 else
                 {
+                    string role = GetUserRole(userId.Value);
+
+                    Console.WriteLine($"Роль: {role}");
                     Console.WriteLine("1. Мій список");
                     Console.WriteLine("2. Додати аніме");
                     Console.WriteLine("3. Оновити прогрес");
                     Console.WriteLine("4. Пошук");
-                    Console.WriteLine("5. Вийти");
+
+                    if (role == "Critic" || role == "Admin")
+                        Console.WriteLine("5. Написати відгук");
+
+                    if (role == "Admin")
+                        Console.WriteLine("6. Зробити Admin");
+
+                    Console.WriteLine("0. Вийти");
 
                     var c = Console.ReadLine();
 
@@ -47,7 +57,9 @@ namespace AniTrackerG
                     else if (c == "2") AddAnime(userId.Value);
                     else if (c == "3") UpdateProgress(userId.Value);
                     else if (c == "4") Search(userId.Value);
-                    else if (c == "5") userId = null;
+                    else if (c == "5") AddReview(userId.Value, role);
+                    else if (c == "6") MakeAdmin(userId.Value, role);
+                    else if (c == "0") userId = null;
                 }
             }
         }
@@ -69,12 +81,11 @@ namespace AniTrackerG
                 cmd.Parameters.AddWithValue("@p", pass);
 
                 var result = cmd.ExecuteScalar();
-
                 if (result != null)
                     return Convert.ToInt32(result);
             }
 
-            Console.WriteLine("Помилка!");
+            Console.WriteLine("Помилка входу");
             Console.ReadKey();
             return null;
         }
@@ -94,7 +105,9 @@ namespace AniTrackerG
             {
                 conn.Open();
 
-                var cmd = new SqliteCommand("INSERT INTO Users(Username,Email,PasswordHash) VALUES(@u,@e,@p)", conn);
+                var cmd = new SqliteCommand(
+                    "INSERT INTO Users(Username,Email,PasswordHash,Role) VALUES(@u,@e,@p,'Viewer')", conn);
+
                 cmd.Parameters.AddWithValue("@u", name);
                 cmd.Parameters.AddWithValue("@e", email);
                 cmd.Parameters.AddWithValue("@p", pass);
@@ -104,6 +117,38 @@ namespace AniTrackerG
             }
 
             Console.ReadKey();
+        }
+
+        static string GetUserRole(int userId)
+        {
+            using (var conn = Database.GetConnection())
+            {
+                conn.Open();
+                var cmd = new SqliteCommand("SELECT Role FROM Users WHERE Id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", userId);
+                return cmd.ExecuteScalar()?.ToString() ?? "Viewer";
+            }
+        }
+
+        static void CheckCriticUpgrade(int userId)
+        {
+            using (var conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                var cmd = new SqliteCommand("SELECT COUNT(*) FROM UserLibrary WHERE UserId=@id", conn);
+                cmd.Parameters.AddWithValue("@id", userId);
+
+                int count = Convert.ToInt32(cmd.ExecuteScalar());
+
+                if (count >= 5)
+                {
+                    var update = new SqliteCommand(
+                        "UPDATE Users SET Role='Critic' WHERE Id=@id AND Role='Viewer'", conn);
+                    update.Parameters.AddWithValue("@id", userId);
+                    update.ExecuteNonQuery();
+                }
+            }
         }
 
         static void AddAnime(int userId)
@@ -123,36 +168,82 @@ namespace AniTrackerG
             Console.Write("Статус: ");
             string status = Console.ReadLine();
 
-            Console.Write("Відгук: ");
-            string review = Console.ReadLine();
-
             using (var conn = Database.GetConnection())
             {
                 conn.Open();
 
-                var cmd1 = new SqliteCommand("INSERT INTO MediaItems(Title,TotalEpisodes) VALUES(@t,@te); SELECT last_insert_rowid();", conn);
+                var cmd1 = new SqliteCommand(
+                    "INSERT INTO MediaItems(Title,TotalEpisodes) VALUES(@t,@te); SELECT last_insert_rowid();", conn);
                 cmd1.Parameters.AddWithValue("@t", title);
                 cmd1.Parameters.AddWithValue("@te", total);
 
                 long mediaId = (long)cmd1.ExecuteScalar();
 
-                var cmd2 = new SqliteCommand("INSERT INTO UserLibrary(UserId,MediaId,Status,Score,WatchedEpisodes) VALUES(@u,@m,@s,@sc,@w)", conn);
+                var cmd2 = new SqliteCommand(
+                    "INSERT INTO UserLibrary(UserId,MediaId,Status,Score,WatchedEpisodes) VALUES(@u,@m,@s,@sc,@w)", conn);
+
                 cmd2.Parameters.AddWithValue("@u", userId);
                 cmd2.Parameters.AddWithValue("@m", mediaId);
                 cmd2.Parameters.AddWithValue("@s", status);
                 cmd2.Parameters.AddWithValue("@sc", score);
                 cmd2.Parameters.AddWithValue("@w", watched);
-                cmd2.ExecuteNonQuery();
 
-                if (!string.IsNullOrWhiteSpace(review))
-                {
-                    var cmd3 = new SqliteCommand("INSERT INTO Reviews(UserId,MediaId,Content,CreatedAt) VALUES(@u,@m,@c,@d)", conn);
-                    cmd3.Parameters.AddWithValue("@u", userId);
-                    cmd3.Parameters.AddWithValue("@m", mediaId);
-                    cmd3.Parameters.AddWithValue("@c", review);
-                    cmd3.Parameters.AddWithValue("@d", DateTime.Now.ToString());
-                    cmd3.ExecuteNonQuery();
-                }
+                cmd2.ExecuteNonQuery();
+            }
+
+            CheckCriticUpgrade(userId);
+        }
+
+        static void AddReview(int userId, string role)
+        {
+            if (role == "Viewer")
+            {
+                Console.WriteLine("❌ Потрібно 5 аніме");
+                Console.ReadKey();
+                return;
+            }
+
+            Console.Write("ID аніме: ");
+            int mediaId = int.Parse(Console.ReadLine());
+
+            Console.Write("Текст: ");
+            string text = Console.ReadLine();
+
+            using (var conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                var cmd = new SqliteCommand(
+                    "INSERT INTO Reviews(UserId,MediaId,Content,CreatedAt) VALUES(@u,@m,@c,@d)", conn);
+
+                cmd.Parameters.AddWithValue("@u", userId);
+                cmd.Parameters.AddWithValue("@m", mediaId);
+                cmd.Parameters.AddWithValue("@c", text);
+                cmd.Parameters.AddWithValue("@d", DateTime.Now.ToString());
+
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        static void MakeAdmin(int userId, string role)
+        {
+            if (role != "Admin")
+            {
+                Console.WriteLine("❌ Нема доступу");
+                Console.ReadKey();
+                return;
+            }
+
+            Console.Write("ID користувача: ");
+            int id = int.Parse(Console.ReadLine());
+
+            using (var conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                var cmd = new SqliteCommand("UPDATE Users SET Role='Admin' WHERE Id=@id", conn);
+                cmd.Parameters.AddWithValue("@id", id);
+                cmd.ExecuteNonQuery();
             }
         }
 
@@ -163,11 +254,10 @@ namespace AniTrackerG
                 conn.Open();
 
                 var cmd = new SqliteCommand(@"
-                SELECT m.Title, m.TotalEpisodes, u.WatchedEpisodes, u.Score, u.Status, r.Content
-                FROM UserLibrary u
-                JOIN MediaItems m ON u.MediaId = m.Id
-                LEFT JOIN Reviews r ON r.MediaId = m.Id AND r.UserId = u.UserId
-                WHERE u.UserId=@id", conn);
+SELECT m.Title, u.WatchedEpisodes, m.TotalEpisodes
+FROM UserLibrary u
+JOIN MediaItems m ON u.MediaId = m.Id
+WHERE u.UserId=@id", conn);
 
                 cmd.Parameters.AddWithValue("@id", userId);
 
@@ -175,18 +265,9 @@ namespace AniTrackerG
 
                 while (r.Read())
                 {
-                    int total = Convert.ToInt32(r["TotalEpisodes"]);
-                    int watched = Convert.ToInt32(r["WatchedEpisodes"]);
-
-                    double percent = total > 0 ? (double)watched / total * 100 : 0;
-
-                    Console.WriteLine("\n" + r["Title"] + " | " + watched + "/" + total + " (" + percent.ToString("F0") + "%)");
-                    Console.WriteLine("Оцінка: " + r["Score"] + " | Статус: " + r["Status"]);
-                    Console.WriteLine("Відгук: " + r["Content"]);
-                    Console.WriteLine(new string('-', 30));
+                    Console.WriteLine($"{r["Title"]}: {r["WatchedEpisodes"]}/{r["TotalEpisodes"]}");
                 }
             }
-
             Console.ReadKey();
         }
 
@@ -203,10 +284,10 @@ namespace AniTrackerG
                 conn.Open();
 
                 var cmd = new SqliteCommand(@"
-                UPDATE UserLibrary 
-                SET WatchedEpisodes=@w 
-                WHERE MediaId=(SELECT Id FROM MediaItems WHERE Title=@t)
-                AND UserId=@u", conn);
+UPDATE UserLibrary
+SET WatchedEpisodes=@w
+WHERE MediaId=(SELECT Id FROM MediaItems WHERE Title=@t)
+AND UserId=@u", conn);
 
                 cmd.Parameters.AddWithValue("@w", w);
                 cmd.Parameters.AddWithValue("@t", title);
@@ -214,8 +295,6 @@ namespace AniTrackerG
 
                 cmd.ExecuteNonQuery();
             }
-
-            Console.ReadKey();
         }
 
         static void Search(int userId)
@@ -227,9 +306,8 @@ namespace AniTrackerG
             {
                 conn.Open();
 
-                var cmd = new SqliteCommand(@"
-                SELECT Title FROM MediaItems 
-                WHERE Title LIKE @q", conn);
+                var cmd = new SqliteCommand(
+                    "SELECT Title FROM MediaItems WHERE Title LIKE @q", conn);
 
                 cmd.Parameters.AddWithValue("@q", "%" + q + "%");
 
